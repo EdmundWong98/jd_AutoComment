@@ -8,7 +8,9 @@ import random
 import re
 import sys
 import time
+from contextlib import nullcontext
 from urllib.parse import quote, urlencode
+import openai
 
 import requests
 import yaml
@@ -16,11 +18,12 @@ import zhon.hanzi
 from lxml import etree
 
 # 加载配置文件
-with open("./config.yml", "r", encoding="utf-8") as f:
+with open("./config.user.yml", "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
 
 # 获取用户的 cookie
 cookie = cfg["user"]["cookie"]
+apikey = cfg["user"]["api_key"]
 
 # 配置日志输出到标准错误流
 log_console = logging.StreamHandler(sys.stderr)
@@ -160,7 +163,7 @@ class JDSpider:
         )
 
         # 确定要爬取的商品数量
-        product_count = min(len(self.productsId), 8) if self.productsId else 0
+        product_count = min(len(self.productsId), 3) if self.productsId else 0
         if product_count == 0:
             default_logger.warning("self.productsId 为空，将使用默认评价")
         default_logger.info("要爬取的商品数量: " + str(product_count))
@@ -229,30 +232,9 @@ class JDSpider:
             else:
                 remarks.append(sentences)
 
-        result = self.solvedata(remarks=remarks)
-
-        if not result:
-            default_logger.warning("当前商品没有评价，使用默认评价")
-            result = [
-                "考虑买这个$之前我是有担心过的，因为我不知道$的质量和品质怎么样，但是看了评论后我就放心了。",
-                "买这个$之前我是有看过好几家店，最后看到这家店的评价不错就决定在这家店买 ",
-                "看了好几家店，也对比了好几家店，最后发现还是这一家的$评价最好。",
-                "看来看去最后还是选择了这家。",
-                "之前在这家店也买过其他东西，感觉不错，这次又来啦。",
-                "这家的$的真是太好用了，用了第一次就还想再用一次。",
-                "收到货后我非常的开心，因为$的质量和品质真的非常的好！",
-                "拆开包装后惊艳到我了，这就是我想要的$!",
-                "快递超快！包装的很好！！很喜欢！！！",
-                "包装的很精美！$的质量和品质非常不错！",
-                "收到快递后迫不及待的拆了包装。$我真的是非常喜欢",
-                "真是一次难忘的购物，这辈子没见过这么好用的东西！！",
-                "经过了这次愉快的购物，我决定如果下次我还要买$的话，我一定会再来这家店买的。",
-                "不错不错！",
-                "我会推荐想买$的朋友也来这家店里买",
-                "真是一次愉快的购物！",
-                "大大的好评!以后买$再来你们店！(￣▽￣)",
-                "真是一次愉快的购物！",
-            ]
+        sentences = self.solvedata(remarks=remarks)
+        result = self.generate_single_review(sentences=sentences)
+        default_logger.info("生成的评价result为：" + str(result))
 
         return result
 
@@ -269,10 +251,52 @@ class JDSpider:
         default_logger.info("爬取的评价结果：" + str(sentences))
         return sentences
 
+    def generate_single_review(self, sentences: list[str]) -> str:
+        """
+        使用 DeepSeek 模型生成一条自然、有真实感、口语化的总结评论，控制在 80 字以内
+        """
+        client = openai.OpenAI(
+            api_key=apikey,
+            base_url="https://api.deepseek.com"
+        )
+
+        prompt_text = "。".join(sentences[:15])  # 取前 15 条，控制上下文长度
+        prompt = f"""
+    以下是一些用户关于商品的评价句子，请你总结这些内容，生成一条自然、有真实感、口语化的评论，控制在 60至80 字左右。只输出一句话评论，不要带任何解释：
+
+    评论内容：
+    {prompt_text}
+
+    请输出一条总结性评价：
+    """
+
+        try:
+            # default_logger.info("prompt为：" + str(prompt))
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=1.0,
+                max_tokens=100,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            default_logger.warning(f"调用 DeepSeek 接口失败: {e}")
+            default_logger.warning("当前商品没有评价，使用默认评价")
+            return self.random_comment()
+
+    def random_comment(self) -> str:
+        default_reviews = [
+            "商品包装得很好，没有破损，物流速度也很快，第二天就到了。实物质量很好，跟描述一致，用起来很顺手。客服服务也很周到，耐心解答了我的问题，购物体验很满意。",
+            "物流特别快，两天就收到货了，包装也很结实。商品本身质量没得说，很有质感。客服态度很友好，细心帮我确认了信息，整个过程都很顺利，非常省心的一次购物。",
+            "收货比预期快，物流小哥服务也不错。打开包装后发现产品质量很好，没有任何瑕疵。客服反应很快，态度特别好，主动提醒我注意事项，感觉非常贴心和专业。",
+            "物流送达很及时，收到的时候包装完好无损。商品用起来感觉不错，做工也挺精细的。客服沟通很顺畅，态度友善又专业，整个购买过程让我非常安心和愉快。",
+            "下单后很快就收到货了，物流速度真的很给力。商品质量出乎意料地好，手感和做工都很满意。客服态度也很好，有问必答，回复很及时，非常贴心，整体购物体验非常棒！"
+        ]
+        return random.choice(default_reviews)
 
 # 测试用例
 if __name__ == "__main__":
-    jdlist = ["商品名"]
+    jdlist = ["得宝纸巾"]
     for item in jdlist:
         spider = JDSpider(item)
         spider.getData(2, 3)

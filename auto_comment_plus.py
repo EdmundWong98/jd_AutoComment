@@ -199,12 +199,12 @@ def generation(pname:str, _class: int = 0, _type: int = 1, opts: object = None):
             num = 4
         num = min(num, len(result))
         # use `.join()` to improve efficiency
-        comments = "".join(random.sample(result, num))
-        opts["logger"].debug("_type: %d", _type)
-        opts["logger"].debug("num: %d", num)
-        opts["logger"].debug("Raw comments: %s", comments)
+        # comments = "".join(random.sample(result, num))
+        # opts["logger"].debug("_type: %d", _type)
+        # opts["logger"].debug("num: %d", num)
+        # opts["logger"].debug("Raw comments: %s", comments)
 
-        return 5, comments.replace("$", name)
+        return 5, str(result)
 
 
 # 查询全部评价
@@ -359,9 +359,11 @@ def ordinary(N, opts=None):
                 opts["logger"].warning("这单没有图片数据，所以直接默认五星好评！！")
                 imgCommentCount_bool = False
             elif imgdata["imgComments"]["imgCommentCount"] > 0:
-                imgurl1 = imgdata["imgComments"]["imgList"][0]["imageUrl"]
+                img_list = imgdata["imgComments"]["imgList"]
+                selected_imgs = random.sample(img_list, 2)
+                imgurl1 = selected_imgs[0]["imageUrl"]
                 opts["logger"].info("imgurl1 url: %s", imgurl1)
-                imgurl2 = imgdata["imgComments"]["imgList"][1]["imageUrl"]
+                imgurl2 = selected_imgs[1]["imageUrl"]
                 opts["logger"].info("imgurl2 url: %s", imgurl2)
                 session = requests.Session()
                 imgBasic = "//img20.360buyimg.com/shaidan/s645x515_"
