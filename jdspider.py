@@ -217,7 +217,21 @@ class JDSpider:
         remarks = []
         for comment in comments:
             sentences = re.findall(zhon.hanzi.sentence, comment)
-            if not sentences or sentences in [
+            # if not sentences or sentences in [
+            #     ["。"],
+            #     ["？"],
+            #     ["！"],
+            #     ["."],
+            #     [","],
+            #     ["?"],
+            #     ["!"],
+            # ]:
+            #     default_logger.warning(
+            #         f"拆分失败或结果不符(去除空格和标点符号)：{sentences}"
+            #     )
+            # else:
+            #     remarks.append(sentences)
+            if sentences and sentences not in [
                 ["。"],
                 ["？"],
                 ["！"],
@@ -226,10 +240,6 @@ class JDSpider:
                 ["?"],
                 ["!"],
             ]:
-                default_logger.warning(
-                    f"拆分失败或结果不符(去除空格和标点符号)：{sentences}"
-                )
-            else:
                 remarks.append(sentences)
 
         sentences = self.solvedata(remarks=remarks)
