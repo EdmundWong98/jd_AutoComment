@@ -3,7 +3,7 @@
 # @Author : @qiu-lzsnmb and @Dimlitter
 # @File : auto_comment_plus.py
 
-import argparse, uuid
+import argparse
 import copy
 import logging
 import os
@@ -11,6 +11,7 @@ import random
 import sys
 import time
 import urllib
+import uuid
 
 import jieba  # just for linting
 import jieba.analyse
@@ -91,14 +92,16 @@ class StyleFormatter(logging.Formatter):
 
 # 生成随机文件名
 def generate_unique_filename():
-    # 获取当前时间戳的最后5位
-    timestamp = str(int(time.time()))[-5:]
+    # 获取当前时间戳的最后4位
+    timestamp = str(int(time.time()))[-4:]
 
-    # 生成 UUID 的前5位
-    unique_id = str(uuid.uuid4().int)[:5]
+    # 生成 UUID 的前4位
+    unique_id = str(uuid.uuid4().int)[:4]
 
     # 组合生成10位的唯一文件名
-    unique_filename = f"{timestamp}{unique_id}.jpg"
+    # unique_filename = f"{timestamp}{unique_id}.jpg"
+    # 组合生成类似iPhone的唯一文件名
+    unique_filename = f"IMG_{timestamp}.jpg"
 
     return unique_filename
 
@@ -181,8 +184,15 @@ def generation(pname:str, _class: int = 0, _type: int = 1, opts: object = None):
 
     # class 0是评价 1是提取id
     try:
-        name = jieba.analyse.textrank(pname, topK=5, allowPOS="n")[0]
-        opts["logger"].debug("Name: %s", name)
+        keywords = jieba.analyse.textrank(pname, topK=5, allowPOS="n")
+        if keywords:
+            name = keywords[0]
+            opts["logger"].debug("Name: %s", name)
+        else:
+            opts["logger"].warning(
+                'jieba textrank analysis error: textrank result empty, name fallback to "宝贝"'
+            )
+            name = "宝贝"
     except Exception as e:
         opts["logger"].warning(
             'jieba textrank analysis error: %s, name fallback to "宝贝"', e
@@ -336,70 +346,71 @@ def ordinary(N, opts=None):
             xing, Str = generation(oname, opts=opts)
             opts["logger"].info(f"\t\t评价内容,星级{xing}：" + Str)
             # 获取图片
-            opts["logger"].info(f"\t\t开始获取图片")
-            img_url = (
-                f"https://club.jd.com/discussion/getProductPageImageCommentList"
-                f".action?productId={pid}"
-            )
-            opts["logger"].debug("Fetching images using the default URL")
-            opts["logger"].debug("URL: %s", img_url)
-            img_resp = requests.get(img_url, headers=headers)
-            opts["logger"].debug(
-                "Successfully accepted the response with status code %d",
-                img_resp.status_code,
-            )
-            if not req.ok:
-                opts["logger"].warning(
-                    "Status code of the response is %d, not 200", img_resp.status_code
+            if opts.get("comment_with_image", True):
+                opts["logger"].info(f"\t\t开始获取图片")
+                img_url = (
+                    f"https://club.jd.com/discussion/getProductPageImageCommentList"
+                    f".action?productId={pid}"
                 )
-            opts["logger"].info("imgdata_url:" + img_url)
-            imgdata = img_resp.json()
-            opts["logger"].debug("Image data: %s", imgdata)
-            if imgdata["imgComments"]["imgCommentCount"] == 0:
-                opts["logger"].warning("这单没有图片数据，所以直接默认五星好评！！")
-                imgCommentCount_bool = False
-            elif imgdata["imgComments"]["imgCommentCount"] > 0:
-                img_list = imgdata["imgComments"]["imgList"]
-                selected_imgs = random.sample(img_list, 2)
-                imgurl1 = selected_imgs[0]["imageUrl"]
-                opts["logger"].info("imgurl1 url: %s", imgurl1)
-                imgurl2 = selected_imgs[1]["imageUrl"]
-                opts["logger"].info("imgurl2 url: %s", imgurl2)
-                session = requests.Session()
-                imgBasic = "//img20.360buyimg.com/shaidan/s645x515_"
-                imgName1 = generate_unique_filename()
-                opts["logger"].debug(f"Image :{imgName1}")
-                downloaded_file1 = download_image(imgurl1, imgName1)
-                # 上传图片
-                if downloaded_file1:
-                    imgPart1 = upload_image(
-                        imgName1, downloaded_file1, session, headers
+                opts["logger"].debug("Fetching images using the default URL")
+                opts["logger"].debug("URL: %s", img_url)
+                img_resp = requests.get(img_url, headers=headers)
+                opts["logger"].debug(
+                    "Successfully accepted the response with status code %d",
+                    img_resp.status_code,
+                )
+                if not req.ok:
+                    opts["logger"].warning(
+                        "Status code of the response is %d, not 200", img_resp.status_code
                     )
-                    # print(imgPart1)  # 和上传图片操作
-                    if imgPart1.status_code == 200 and ".jpg" in imgPart1.text:
-                        imgurl1t = f"{imgBasic}{imgPart1.text}"
-                    else:
-                        imgurl1 = ""
-                        opts["logger"].info("上传图片失败")
-                        exit(0)
-                imgName2 = generate_unique_filename()
-                opts["logger"].debug(f"Image :{imgName2}")
-                downloaded_file2 = download_image(imgurl2, imgName2)
-                # 上传图片
-                if downloaded_file2:
-                    imgPart2 = upload_image(
-                        imgName2, downloaded_file2, session, headers
-                    )
-                    # print(imgPart2)  # 和上传图片操作
-                    if imgPart2.status_code == 200 and ".jpg" in imgPart2.text:
-                        imgurl2t = f"{imgBasic}{imgPart2.text}"
-                    else:
-                        imgurl2 = ""
-                        opts["logger"].info("上传图片失败")
-                        exit(0)
-                imgurl = imgurl1 + "," + imgurl2
-                opts["logger"].debug("Image URL: %s", imgurl)
-                opts["logger"].info(f"\t\t图片url={imgurl}")
+                opts["logger"].info("imgdata_url:" + img_url)
+                imgdata = img_resp.json()
+                opts["logger"].debug("Image data: %s", imgdata)
+                if imgdata["imgComments"]["imgCommentCount"] == 0:
+                    opts["logger"].warning("这单没有图片数据，所以直接默认五星好评！！")
+                    imgCommentCount_bool = False
+                elif imgdata["imgComments"]["imgCommentCount"] > 0:
+                    img_list = imgdata["imgComments"]["imgList"]
+                    selected_imgs = random.sample(img_list, 2)
+                    imgurl1 = selected_imgs[0]["imageUrl"]
+                    opts["logger"].info("imgurl1 url: %s", imgurl1)
+                    imgurl2 = selected_imgs[1]["imageUrl"]
+                    opts["logger"].info("imgurl2 url: %s", imgurl2)
+                    session = requests.Session()
+                    imgBasic = "//img20.360buyimg.com/shaidan/s645x515_"
+                    imgName1 = generate_unique_filename()
+                    opts["logger"].debug(f"Image :{imgName1}")
+                    downloaded_file1 = download_image(imgurl1, imgName1)
+                    # 上传图片
+                    if downloaded_file1:
+                        imgPart1 = upload_image(
+                            imgName1, downloaded_file1, session, headers
+                        )
+                        # print(imgPart1)  # 和上传图片操作
+                        if imgPart1.status_code == 200 and ".jpg" in imgPart1.text:
+                            imgurl1t = f"{imgBasic}{imgPart1.text}"
+                        else:
+                            imgurl1 = ""
+                            opts["logger"].info("上传图片失败")
+                            exit(0)
+                    imgName2 = generate_unique_filename()
+                    opts["logger"].debug(f"Image :{imgName2}")
+                    downloaded_file2 = download_image(imgurl2, imgName2)
+                    # 上传图片
+                    if downloaded_file2:
+                        imgPart2 = upload_image(
+                            imgName2, downloaded_file2, session, headers
+                        )
+                        # print(imgPart2)  # 和上传图片操作
+                        if imgPart2.status_code == 200 and ".jpg" in imgPart2.text:
+                            imgurl2t = f"{imgBasic}{imgPart2.text}"
+                        else:
+                            imgurl2 = ""
+                            opts["logger"].info("上传图片失败")
+                            exit(0)
+                    imgurl = imgurl1 + "," + imgurl2
+                    opts["logger"].debug("Image URL: %s", imgurl)
+                    opts["logger"].info(f"\t\t图片url={imgurl}")
             Str: str = urllib.parse.quote(Str, safe="/", encoding=None, errors=None)
             Comment_data = {
                 "orderId": oid,
@@ -409,7 +420,7 @@ def ordinary(N, opts=None):
                 "saveStatus": "1",
                 "anonymousFlag": "1",  # 是否匿名
             }
-            if imgCommentCount_bool:
+            if opts.get("comment_with_image", True) and imgCommentCount_bool:
                 Comment_data["imgs"] = imgurl  # 图片url
             opts["logger"].debug("Data: %s", Comment_data)
             if not opts.get("dry_run"):
@@ -875,6 +886,9 @@ if __name__ == "__main__":
     logger.debug("Configurations in Python-dict format: %s", cfg)
     ck = cfg["user"]["cookie"]
     jdspider.cookie = ck.encode("utf-8")
+    comment_with_image = cfg["user"].get("comment_with_image", True)
+    opts["comment_with_image"] = comment_with_image
+    logger.info(f"本次评论是否带图片：{opts['comment_with_image']}")
 
     headers2 = {
         "Cookie": ck.encode("utf-8"),
