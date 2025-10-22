@@ -77,7 +77,7 @@ class JDSpider:
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
             "sec-fetch-mode": "navigate",
-            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0.1 Safari/605.1.15",
         }
         # 获取商品 ID 列表
         self.productsId = self.getId()
@@ -146,6 +146,7 @@ class JDSpider:
             default_logger.warning(f"请求异常，状态码错误，爬虫连接异常！错误信息: {e}")
             return []
 
+        text = response.text
         html = etree.HTML(response.text)
         return html.xpath('//li[@class="gl-item"]/@data-sku')
 
