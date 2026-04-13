@@ -5,6 +5,7 @@
 
 import argparse
 import copy
+import json
 import logging
 import os
 import random
@@ -354,17 +355,33 @@ def ordinary(N, opts=None):
                 )
                 opts["logger"].debug("Fetching images using the default URL")
                 opts["logger"].debug("URL: %s", img_url)
-                img_resp = requests.get(img_url, headers=headers)
+                img_headers = headers.copy()
+                img_headers["Referer"] = f"https://item.jd.com/{pid}.html"
+                img_resp = requests.get(img_url, headers=img_headers)
                 opts["logger"].debug(
                     "Successfully accepted the response with status code %d",
                     img_resp.status_code,
                 )
-                if not req.ok:
+                if not img_resp.ok:
                     opts["logger"].warning(
                         "Status code of the response is %d, not 200", img_resp.status_code
                     )
                 opts["logger"].info("imgdata_url:" + img_url)
-                imgdata = img_resp.json()
+                opts["logger"].debug("img_resp text: %s", img_resp.text[:500] if img_resp.text else "empty")
+                try:
+                    if img_resp.text.strip().startswith('('):
+                        #京东接口返回的是JSONP格式，外层有括号
+                        json_text = img_resp.text.strip()[1:-1]
+                        imgdata = json.loads(json_text)
+                    else:
+                        imgdata = img_resp.json()
+                except Exception as e:
+                    opts["logger"].error("解析图片数据失败: %s, 响应状态码: %d, 响应内容: %s",
+                                        e, img_resp.status_code, img_resp.text[:200] if img_resp.text else "empty")
+                    # 没有图片就跳过晒图
+                    opts["logger"].warning("获取图片失败，跳过晒图环节")
+                    imgCommentCount_bool = False
+                    continue
                 opts["logger"].debug("Image data: %s", imgdata)
                 if imgdata["imgComments"]["imgCommentCount"] == 0:
                     opts["logger"].warning("这单没有图片数据，所以直接默认五星好评！！")

@@ -10,9 +10,11 @@ import sys
 import time
 from contextlib import nullcontext
 from urllib.parse import quote, urlencode
+from playwright.sync_api import sync_playwright
 import openai
 
-import requests
+# import requests
+from curl_cffi import requests
 import yaml
 import zhon.hanzi
 from lxml import etree
@@ -66,18 +68,17 @@ class JDSpider:
         self.commentBaseUrl = "https://club.jd.com"
         # 基础请求头
         self.headers = BASE_HEADERS.copy()
-        # 带 cookie 的请求头
+        # 带 cookie 的请求头 - 使用 Safari/Mac headers 匹配 cookie 来源
         self.headers2 = {
             **BASE_HEADERS,
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "accept-language": "en,zh-CN;q=0.9,zh;q=0.8",
+            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Cookie": cookie,
-            "priority": "u=0, i",
-            "sec-ch-ua": '"Microsoft Edge";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+            "sec-fetch-mode": "navigate",
+            "sec-ch-ua": '"Not A(Brand";v="99", "Chromium";v="98", "Google Chrome";v="98"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
-            "sec-fetch-mode": "navigate",
-            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0.1 Safari/605.1.15",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
         }
         # 获取商品 ID 列表
         self.productsId = self.getId()
@@ -142,11 +143,10 @@ class JDSpider:
             response = requests.get(self.startUrl, headers=self.headers2)
             response.raise_for_status()  # 检查响应状态码
             default_logger.info("获取同类产品的搜索 URL 结果：" + self.startUrl)
-        except requests.RequestException as e:
+        except Exception as e:
             default_logger.warning(f"请求异常，状态码错误，爬虫连接异常！错误信息: {e}")
             return []
 
-        text = response.text
         html = etree.HTML(response.text)
         return html.xpath('//li[@class="gl-item"]/@data-sku')
 
@@ -181,7 +181,7 @@ class JDSpider:
                     )
                     response = requests.get(url, headers=self.getHeaders(product_id))
                     response.raise_for_status()  # 检查响应状态码
-                except requests.RequestException as e:
+                except requests.RequestsError as e:
                     default_logger.warning(f"请求异常: {e}")
                     continue
 
@@ -244,6 +244,8 @@ class JDSpider:
                 remarks.append(sentences)
 
         sentences = self.solvedata(remarks=remarks)
+        if not sentences:
+            sentences.append("商品名称：" + self.categlory)
         result = self.generate_single_review(sentences=sentences)
         default_logger.info("生成的评价result为：" + str(result))
 
@@ -273,9 +275,9 @@ class JDSpider:
 
         prompt_text = "。".join(sentences[:15])  # 取前 15 条，控制上下文长度
         prompt = f"""
-    以下是一些用户关于商品的评价句子，请你总结这些内容，生成一条自然、有真实感、口语化的评论，控制在 100 字左右，不低于 80 字。只输出一句话评论，不要带任何解释：
+    以下是一些用户关于商品的评价句子或者是商品名称(如果是商品名称，提取名称中的关键词即可，不需要附带商品型号)，请你总结这些内容，生成一条自然、有真实感、口语化的评论，控制在 100 字左右，不低于 80 字。只输出一句话评论，不要带任何解释：
 
-    评论内容：
+    评论内容或商品名称：
     {prompt_text}
 
     请输出一条总结性评价：
