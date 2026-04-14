@@ -56,14 +56,12 @@ BASE_HEADERS = {
 class JDSpider:
     """
     京东爬虫类，用于爬取指定商品类别的评论信息。
-    传入商品类别（如手机、电脑）构造实例，然后调用 getData 方法爬取数据。
+    支持两种初始化方式：
+    1. 传入 product_id（推荐）：直接获取该商品的评论，避免搜索接口反爬
+    2. 传入 categlory：通过商品名称搜索获取评论
     """
 
-    def __init__(self, categlory):
-        # 京东搜索商品的起始页面 URL
-        self.startUrl = "https://search.jd.com/Search?keyword=%s&enc=utf-8" % (
-            quote(categlory)
-        )
+    def __init__(self, product_id=None, categlory=None):
         # 评论接口的基础 URL
         self.commentBaseUrl = "https://club.jd.com"
         # 基础请求头
@@ -80,12 +78,26 @@ class JDSpider:
             "sec-ch-ua-platform": '"macOS"',
             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
         }
-        # 获取商品 ID 列表
-        self.productsId = self.getId()
+
+        # 保存商品名称（用于生成评论时明确商品）
+        self.product_name = categlory or product_id or "商品"
+
+        # 直接使用传入的 product_id（推荐方式，避免搜索反爬）
+        if product_id:
+            self.productsId = [product_id]
+            self.categlory = product_id
+            default_logger.debug(f"直接使用商品ID: {product_id}, 商品名称: {categlory}")
+        else:
+            # 通过商品名称搜索获取 ID（原有逻辑，作为 fallback）
+            self.startUrl = "https://search.jd.com/Search?keyword=%s&enc=utf-8" % (
+                quote(categlory)
+            )
+            self.productsId = self.getId()
+            self.categlory = categlory
+            default_logger.debug(f"通过搜索获取商品ID，关键词: {categlory}")
+
         # 评论类型映射，1 差评，2 中评，3 好评
-        self.comtype = {1: "negative", 2: "medium", 3: "positive"}  # 修正拼写错误
-        # 商品类别
-        self.categlory = categlory
+        self.comtype = {1: "negative", 2: "medium", 3: "positive"}
         # IP 列表，用于代理（当前为空）
         self.iplist = {"http": [], "https": []}
 
@@ -152,32 +164,30 @@ class JDSpider:
 
     def getData(self, maxPage: int, score: int):
         """
-        爬取指定商品类别的评论信息。
+        爬取指定商品的评论信息。
         :param maxPage: 最大爬取页数，每页 10 条评论
         :param score: 评论类型（1 差评，2 中评，3 好评）
         :return: 处理后的评论列表
         """
         comments = []
         scores = []
-        default_logger.info(
-            "爬取商品数量最多为 8 个，请耐心等待，也可以自行修改 jdspider 文件"
-        )
 
         # 确定要爬取的商品数量
-        product_count = min(len(self.productsId), 3) if self.productsId else 0
+        product_count = min(len(self.productsId), 1) if self.productsId else 0
         if product_count == 0:
             default_logger.warning("self.productsId 为空，将使用默认评价")
-        default_logger.info("要爬取的商品数量: " + str(product_count))
+            return None
+        default_logger.info(f"开始爬取商品评论，商品ID: {self.productsId[0]}, 最多 {maxPage} 页")
 
         for j in range(product_count):
             product_id = self.productsId[j]
             for i in range(1, maxPage):
                 params, url = self.getParamUrl(product_id, str(i), str(score))
-                default_logger.info(f"正在爬取第 {j + 1} 个商品的第 {i} 页评论信息")
+                default_logger.info(f"正在爬取商品 {product_id} 的第 {i} 页评论")
 
                 try:
                     default_logger.info(
-                        f"爬取商品评价的 URL 链接是 {url}，商品的 ID 是：{product_id}"
+                        f"爬取商品评价的 URL 链接是 {url}"
                     )
                     response = requests.get(url, headers=self.getHeaders(product_id))
                     response.raise_for_status()  # 检查响应状态码
@@ -185,7 +195,8 @@ class JDSpider:
                     default_logger.warning(f"请求异常: {e}")
                     continue
 
-                time.sleep(random.randint(5, 10))  # 设置时延，防止被封 IP
+                # 减少请求间隔，降低被封风险
+                time.sleep(random.randint(2, 4))
 
                 if not response.text:
                     default_logger.warning("未爬取到信息")
@@ -214,24 +225,14 @@ class JDSpider:
 
         default_logger.info(f"已爬取 {len(comments)} 条 {self.comtype[score]} 评价信息")
 
+        if not comments:
+            default_logger.warning("未爬取到任何评论，将使用默认评价")
+            return None
+
         # 处理评论，拆分成句子
         remarks = []
         for comment in comments:
             sentences = re.findall(zhon.hanzi.sentence, comment)
-            # if not sentences or sentences in [
-            #     ["。"],
-            #     ["？"],
-            #     ["！"],
-            #     ["."],
-            #     [","],
-            #     ["?"],
-            #     ["!"],
-            # ]:
-            #     default_logger.warning(
-            #         f"拆分失败或结果不符(去除空格和标点符号)：{sentences}"
-            #     )
-            # else:
-            #     remarks.append(sentences)
             if sentences and sentences not in [
                 ["。"],
                 ["？"],
@@ -245,8 +246,8 @@ class JDSpider:
 
         sentences = self.solvedata(remarks=remarks)
         if not sentences:
-            sentences.append("商品名称：" + self.categlory)
-        result = self.generate_single_review(sentences=sentences)
+            sentences.append("商品名称：" + str(self.categlory))
+        result = self.generate_single_review(sentences=sentences, product_name=self.product_name)
         default_logger.info("生成的评价result为：" + str(result))
 
         return result
@@ -264,24 +265,39 @@ class JDSpider:
         default_logger.info("爬取的评价结果：" + str(sentences))
         return sentences
 
-    def generate_single_review(self, sentences: list[str]) -> str:
+    def generate_single_review(self, sentences: list[str], product_name: str = None) -> str:
         """
         使用 DeepSeek 模型生成一条自然、有真实感、口语化的总结评论，控制在 80 字以内
+        :param sentences: 从评论中提取的句子列表
+        :param product_name: 商品名称（必须明确指定，避免评论主体错误）
         """
         client = openai.OpenAI(
             api_key=apikey,
             base_url="https://api.deepseek.com"
         )
 
+        # 确保有商品名称
+        if not product_name:
+            product_name = "该商品"
+
         prompt_text = "。".join(sentences[:15])  # 取前 15 条，控制上下文长度
         prompt = f"""
-    以下是一些用户关于商品的评价句子或者是商品名称(如果是商品名称，提取名称中的关键词即可，不需要附带商品型号)，请你总结这些内容，生成一条自然、有真实感、口语化的评论，控制在 100 字左右，不低于 80 字。只输出一句话评论，不要带任何解释：
+你是一位真实的京东购物用户，需要为购买的商品写一条评价。
 
-    评论内容或商品名称：
-    {prompt_text}
+【重要】请特别注意：
+1. 评价必须是关于 "{product_name}" 这个商品的真实感受
+2. 不要提及其他无关商品或品牌
+3. 评价长度控制在 80-100 字之间
 
-    请输出一条总结性评价：
-    """
+以下是一些用户关于该商品的评价句子：
+{prompt_text}
+
+请根据以上评论，生成一条关于 "{product_name}" 的总结性评价，要求：
+- 自然、口语化、有真实感
+- 如果以上评论太过于简单，可以自行丰富评价内容
+- 不要包含任何解释或说明，只输出一句话评价
+- 评价主体必须是 "{product_name}"
+"""
 
         try:
             # default_logger.info("prompt为：" + str(prompt))

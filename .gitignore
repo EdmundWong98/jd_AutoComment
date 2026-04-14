@@ -137,5 +137,6 @@ config.user.yml
 .vscode/
 
 # images
+img/
 *.jpg
 *.txt

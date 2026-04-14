@@ -5,6 +5,8 @@
 
 import argparse
 import copy
+import hashlib
+import io
 import json
 import logging
 import os
@@ -20,6 +22,12 @@ import requests
 import yaml
 from lxml import etree
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
 import jdspider
 
 # from http2_adapter import Http2Adapter
@@ -31,6 +39,20 @@ ORDINARY_SLEEP_SEC = 10
 SUNBW_SLEEP_SEC = 5
 REVIEW_SLEEP_SEC = 10
 SERVICE_RATING_SLEEP_SEC = 15
+
+# 图片处理配置
+IMAGE_CONFIG = {
+    "max_size": 2 * 1024 * 1024,  # 2MB
+    "max_dimension": 1200,  # 最大边长
+    "quality": 90,  # 默认图片质量
+    "retry": {
+        "max_attempts": 3,
+        "initial_delay": 1,
+    }
+}
+
+# 已使用的图片指纹集合，用于去重
+_used_fingerprints = set()
 
 # logging with styles
 # Reference: https://stackoverflow.com/a/384125/12002560
@@ -91,6 +113,65 @@ class StyleFormatter(logging.Formatter):
         return logging.Formatter.format(self, rcd)
 
 
+# 生成图片内容指纹用于去重
+def generate_image_fingerprint(image_data: bytes) -> str:
+    """生成图片MD5指纹"""
+    return hashlib.md5(image_data).hexdigest()
+
+
+# 处理图片确保符合京东上传要求
+def process_image(image_data: bytes, logger=None) -> bytes:
+    """处理图片：格式转换、尺寸调整、质量压缩、添加水印防重复"""
+    if not PIL_AVAILABLE:
+        return image_data
+
+    try:
+        img = Image.open(io.BytesIO(image_data))
+
+        # 格式转换：统一转为JPEG
+        if img.format != 'JPEG':
+            img = img.convert('RGB')
+
+        # 尺寸调整（最长边不超过 max_dimension）
+        max_size = IMAGE_CONFIG["max_dimension"]
+        width, height = img.size
+        if max(width, height) > max_size:
+            ratio = max_size / max(width, height)
+            new_size = (int(width * ratio), int(height * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+
+        # 添加随机水印防止重复
+        draw = ImageDraw.Draw(img)
+        watermark = str(random.getrandbits(64))
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
+        except Exception:
+            font = ImageFont.load_default()
+        # 在角落添加半透明水印
+        draw.text((10, 10), watermark, font=font, fill=(200, 200, 200, 128))
+
+        # 质量压缩控制在 max_size 以内
+        output = io.BytesIO()
+        quality = IMAGE_CONFIG["quality"]
+        while quality > 10:
+            output.seek(0)
+            output.truncate()
+            img.save(output, format='JPEG', quality=quality)
+            if output.tell() < IMAGE_CONFIG["max_size"]:
+                break
+            quality -= 5
+
+        result = output.getvalue()
+        if logger:
+            logger.debug(f"图片处理完成: 原始大小 {len(image_data)/1024:.1f}KB -> 处理后 {len(result)/1024:.1f}KB")
+        return result
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"图片处理失败: {str(e)}，使用原始图片")
+        return image_data
+
+
 # 生成随机文件名
 def generate_unique_filename():
     # 获取当前时间戳的最后4位
@@ -107,114 +188,166 @@ def generate_unique_filename():
     return unique_filename
 
 
-# 下载图片
-def download_image(img_url, file_name):
+# 增强型下载图片（带处理）
+def download_image(img_url, file_name, logger=None):
     fullUrl = f"https:{img_url}"
-    response = requests.get(fullUrl)
-    if response.status_code == 200:
-        directory = "img"
-        if not os.path.exists(directory):
-            # 如果目录不存在，创建目录
-            os.makedirs(directory)
-        file_path = os.path.join(directory, file_name)
-        with open(file_path, "wb") as file:
-            file.write(response.content)
-        return file_path
-    else:
-        print("Failed to download image")
+    try:
+        response = requests.get(fullUrl, timeout=30)
+        if response.status_code == 200:
+            image_data = response.content
+
+            # 生成指纹进行去重检查
+            fingerprint = generate_image_fingerprint(image_data)
+            if fingerprint in _used_fingerprints:
+                if logger:
+                    logger.debug(f"图片已使用过 (fingerprint: {fingerprint[:8]}...), 尝试获取其他图片")
+                return None
+            _used_fingerprints.add(fingerprint)
+
+            # 处理图片
+            processed_data = process_image(image_data, logger)
+
+            directory = "img"
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+            file_path = os.path.join(directory, file_name)
+            with open(file_path, "wb") as file:
+                file.write(processed_data)
+            return file_path
+        else:
+            if logger:
+                logger.warning(f"图片下载失败，HTTP状态码: {response.status_code}")
+            return None
+    except Exception as e:
+        if logger:
+            logger.warning(f"图片下载异常: {str(e)}")
         return None
 
 
-# 上传图片到JD接口
-def upload_image(filename, file_path, session, headers):
-    # session.mount(
-    #     "https://club.jd.com/myJdcomments/ajaxUploadImage.action", Http2Adapter()
-    # )
+# 获取增强型上传请求头
+def get_upload_headers(base_headers: dict) -> dict:
+    """构建完整的上传请求头"""
+    enhanced = base_headers.copy()
+    enhanced.update({
+        'Referer': 'https://club.jd.com/myJdcomments/myJdcomment.action',
+        'Origin': 'https://club.jd.com',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': '*/*',
+    })
+    return enhanced
 
-    files = {
-        "name": (None, filename),
-        # 不需要 PHPSESSID 时可以忽略
-        # 如果需要的话，可以从初次登录响应中获取
-        "Filedata": (file_path, open(file_path, "rb"), "image/jpeg"),
-    }
 
-    # 发起 POST 请求
-    response = session.post(
-        "https://club.jd.com/myJdcomments/ajaxUploadImage.action",
-        headers=headers,
-        files=files,
-    )
+# 带重试机制的上传图片到JD接口
+def upload_image_with_retry(filename, file_path, session, headers, logger=None, max_retries=None):
+    """带指数退避重试的图片上传"""
+    if max_retries is None:
+        max_retries = IMAGE_CONFIG["retry"]["max_attempts"]
 
-    return response
+    retry_delay = IMAGE_CONFIG["retry"]["initial_delay"]
+    enhanced_headers = get_upload_headers(headers)
+
+    for attempt in range(max_retries):
+        try:
+            with open(file_path, 'rb') as f:
+                files = {
+                    'name': (None, filename),
+                    'Filedata': (filename, f, 'image/jpeg'),
+                    'upload': (None, 'Submit Query'),
+                }
+
+                response = session.post(
+                    "https://club.jd.com/myJdcomments/ajaxUploadImage.action",
+                    headers=enhanced_headers,
+                    files=files,
+                    timeout=30
+                )
+
+            if response.status_code == 200 and '.jpg' in response.text:
+                if logger:
+                    logger.debug(f"图片上传成功: {filename}")
+                return response
+
+            if logger:
+                logger.warning(f"上传尝试 {attempt + 1} 失败: HTTP {response.status_code}, 响应: {response.text[:100]}")
+
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # 指数退避
+
+        except requests.RequestException as e:
+            if logger:
+                logger.warning(f"上传尝试 {attempt + 1} 异常: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2
+
+    if logger:
+        logger.error(f"图片上传最终失败: {filename}，已达到最大重试次数")
+    return None
+
+
+# 兼容旧接口的上传函数
+def upload_image(filename, file_path, session, headers, logger=None):
+    return upload_image_with_retry(filename, file_path, session, headers, logger)
 
 
 # 评价生成
-def generation(pname:str, _class: int = 0, _type: int = 1, opts: object = None):
+def generation(pname: str, product_id: str = None, _class: int = 0, _type: int = 1, opts: object = None):
+    """
+    生成评价内容
+    :param pname: 商品名称
+    :param product_id: 商品ID（可选，直接传入可避免搜索反爬）
+    :param _class: 0=评价，1=提取关键词
+    :param _type: 1=好评相关，0=追评相关
+    :param opts: 日志等选项
+    """
     result = []
     opts = opts or {}
-    items = ["商品名"]
-    items.clear()
-    items.append(pname)
-    opts["logger"].debug("Items: %s", items)
-    loop_times = len(items)
-    opts["logger"].debug("Total loop times: %d", loop_times)
-    for i, item in enumerate(items):
-        opts["logger"].debug("Loop: %d / %d", i + 1, loop_times)
-        opts["logger"].debug("Current item: %s", item)
-        spider = jdspider.JDSpider(item)
+
+    # 增加对增值服务的评价鉴别
+    if "赠品" in pname or "非实物" in pname or "增值服务" in pname:
+        result = [
+            "赠品挺好的。",
+            "很贴心，能有这样免费赠送的赠品!",
+            "正好想着要不要多买一份增值服务，没想到还有这样的赠品。",
+            "赠品正合我意。",
+            "赠品很好，挺不错的。",
+            "本来买了产品以后还有些担心。但是看到赠品以后就放心了。",
+            "不论品质如何，至少说明店家对客的态度很好！",
+            "我很喜欢这些商品！",
+            "我对于商品的附加值很在乎，恰好这些赠品为这件商品提供了这样的附加值，这令我很满意。",
+            "感觉现在的网购环境越来越好了，以前网购的时候还没有这么多贴心的赠品和增值服务。",
+            "第一次用京东，被这种赠品和增值服务的良好态度感动到了。",
+            "赠品还行。",
+        ]
+    else:
+        # 使用 product_id 直接获取评论，避免搜索接口反爬
+        spider = jdspider.JDSpider(product_id=product_id, categlory=pname)
         opts["logger"].debug("Successfully created a JDSpider instance")
-        # 增加对增值服务的评价鉴别
-        if "赠品" in pname or "非实物" in pname or "增值服务" in pname:
-            result = [
-                "赠品挺好的。",
-                "很贴心，能有这样免费赠送的赠品!",
-                "正好想着要不要多买一份增值服务，没想到还有这样的赠品。",
-                "赠品正合我意。",
-                "赠品很好，挺不错的。",
-                "本来买了产品以后还有些担心。但是看到赠品以后就放心了。",
-                "不论品质如何，至少说明店家对客的态度很好！",
-                "我很喜欢这些商品！",
-                "我对于商品的附加值很在乎，恰好这些赠品为这件商品提供了这样的的附加值，这令我很满意。"
-                "感觉现在的网购环境环境越来越好了，以前网购的时候还没有过么多贴心的赠品和增值服务",
-                "第一次用京东，被这种赠品和增值服物的良好态度感动到了。",
-                "赠品还行。",
-            ]
-        else:
-            result = spider.getData(2, 3)  # 这里可以自己改
-        opts["logger"].debug("Result: %s", result)
+        result = spider.getData(2, 3)  # 这里可以自己改
+
+        # 如果爬取失败，返回 None 让调用方使用默认评价
+        if result is None:
+            opts["logger"].warning("评论爬取失败，将使用默认评价")
+            return None
+
+    opts["logger"].debug("Result: %s", result)
 
     # class 0是评价 1是提取id
-    try:
-        keywords = jieba.analyse.textrank(pname, topK=5, allowPOS="n")
-        if keywords:
-            name = keywords[0]
-            opts["logger"].debug("Name: %s", name)
-        else:
-            opts["logger"].warning(
-                'jieba textrank analysis error: textrank result empty, name fallback to "宝贝"'
-            )
-            name = "宝贝"
-    except Exception as e:
-        opts["logger"].warning(
-            'jieba textrank analysis error: %s, name fallback to "宝贝"', e
-        )
-        name = "宝贝"
     if _class == 1:
+        try:
+            keywords = jieba.analyse.textrank(pname, topK=5, allowPOS="n")
+            if keywords:
+                name = keywords[0]
+                opts["logger"].debug("Name: %s", name)
+            else:
+                name = "宝贝"
+        except Exception as e:
+            opts["logger"].warning('jieba textrank analysis error: %s, fallback to "宝贝"', e)
+            name = "宝贝"
         opts["logger"].debug("_class is 1. Directly return name")
         return name
     else:
-        num = 0
-        if _type == 1:
-            num = 6
-        elif _type == 0:
-            num = 4
-        num = min(num, len(result))
-        # use `.join()` to improve efficiency
-        # comments = "".join(random.sample(result, num))
-        # opts["logger"].debug("_type: %d", _type)
-        # opts["logger"].debug("num: %d", num)
-        # opts["logger"].debug("Raw comments: %s", comments)
-
         return 5, str(result)
 
 
@@ -333,7 +466,13 @@ def ordinary(N, opts=None):
         idx = 0
         for oname, pid in zip(oname_data, pid_data):
             opts["logger"].debug("Loop: %d / %d", idx + 1, loop_times1)
-            pid = pid.replace("//item.jd.com/", "").replace(".html", "")
+            # 使用正则表达式提取纯数字的商品ID（处理带额外参数的情况如 ?bbtf=null）
+            import re
+            pid_match = re.search(r'/(\d+)(?:\.html|/|$)', pid)
+            if pid_match:
+                pid = pid_match.group(1)
+            else:
+                pid = pid.replace("//item.jd.com/", "").replace(".html", "").split("?")[0].split("&")[0]
             opts["logger"].debug("pid: %s", pid)
             if "javascript" in pid:
                 opts["logger"].error(
@@ -344,7 +483,20 @@ def ordinary(N, opts=None):
             opts["logger"].info(f"\t{i}.开始评价订单\t{oname}[{oid}]并晒图")
             url2 = "https://club.jd.com/myJdcomments/saveProductComment.action"
             opts["logger"].debug("URL: %s", url2)
-            xing, Str = generation(oname, opts=opts)
+
+            # 直接使用 product_id 获取评论，避免搜索接口反爬
+            xing, Str = generation(oname, product_id=pid, opts=opts)
+
+            # 处理获取失败的情况
+            if xing is None or Str is None:
+                opts["logger"].warning("评论生成失败，使用默认评价")
+                Str = random.choice([
+                    "商品包装得很好，没有破损，物流速度也很快，第二天就到了。实物质量很好，跟描述一致，用起来很顺手。",
+                    "物流特别快，两天就收到货了，包装也很结实。商品本身质量没得说，很有质感。客服态度很友好。",
+                    "收货比预期快，物流小哥服务也不错。打开包装后发现产品质量很好，没有任何瑕疵。",
+                ])
+                xing = 5
+
             opts["logger"].info(f"\t\t评价内容,星级{xing}：" + Str)
             # 获取图片
             if opts.get("comment_with_image", True):
@@ -397,37 +549,52 @@ def ordinary(N, opts=None):
                     imgBasic = "//img20.360buyimg.com/shaidan/s645x515_"
                     imgName1 = generate_unique_filename()
                     opts["logger"].debug(f"Image :{imgName1}")
-                    downloaded_file1 = download_image(imgurl1, imgName1)
-                    # 上传图片
+
+                    # 下载并处理图片
+                    imgurl1t = ""
+                    downloaded_file1 = download_image(imgurl1, imgName1, opts.get("logger"))
+                    # 上传图片（带重试机制）
                     if downloaded_file1:
                         imgPart1 = upload_image(
-                            imgName1, downloaded_file1, session, headers
+                            imgName1, downloaded_file1, session, headers, opts.get("logger")
                         )
-                        # print(imgPart1)  # 和上传图片操作
-                        if imgPart1.status_code == 200 and ".jpg" in imgPart1.text:
+                        if imgPart1 and imgPart1.status_code == 200 and ".jpg" in imgPart1.text:
                             imgurl1t = f"{imgBasic}{imgPart1.text}"
                         else:
-                            imgurl1 = ""
-                            opts["logger"].info("上传图片失败")
-                            exit(0)
+                            opts["logger"].warning("图片1上传失败，将跳过该图片")
+                    else:
+                        opts["logger"].warning("图片1下载失败，将跳过该图片")
+
                     imgName2 = generate_unique_filename()
                     opts["logger"].debug(f"Image :{imgName2}")
-                    downloaded_file2 = download_image(imgurl2, imgName2)
-                    # 上传图片
+                    imgurl2t = ""
+                    downloaded_file2 = download_image(imgurl2, imgName2, opts.get("logger"))
+                    # 上传图片（带重试机制）
                     if downloaded_file2:
                         imgPart2 = upload_image(
-                            imgName2, downloaded_file2, session, headers
+                            imgName2, downloaded_file2, session, headers, opts.get("logger")
                         )
-                        # print(imgPart2)  # 和上传图片操作
-                        if imgPart2.status_code == 200 and ".jpg" in imgPart2.text:
+                        if imgPart2 and imgPart2.status_code == 200 and ".jpg" in imgPart2.text:
                             imgurl2t = f"{imgBasic}{imgPart2.text}"
                         else:
-                            imgurl2 = ""
-                            opts["logger"].info("上传图片失败")
-                            exit(0)
-                    imgurl = imgurl1 + "," + imgurl2
+                            opts["logger"].warning("图片2上传失败，将跳过该图片")
+                    else:
+                        opts["logger"].warning("图片2下载失败，将跳过该图片")
+
+                    # 组合图片URL（如果任一图片上传失败则只用成功的那个）
+                    imgurl_parts = []
+                    if imgurl1t:
+                        imgurl_parts.append(imgurl1t)
+                    if imgurl2t:
+                        imgurl_parts.append(imgurl2t)
+                    imgurl = ",".join(imgurl_parts) if imgurl_parts else ""
                     opts["logger"].debug("Image URL: %s", imgurl)
                     opts["logger"].info(f"\t\t图片url={imgurl}")
+
+                    # 如果两张图片都上传失败，跳过晒图环节
+                    if not imgurl:
+                        opts["logger"].warning("图片全部上传失败，跳过晒图环节")
+                        imgCommentCount_bool = False
             Str: str = urllib.parse.quote(Str, safe="/", encoding=None, errors=None)
             Comment_data = {
                 "orderId": oid,
@@ -633,7 +800,9 @@ def review(N, opts=None):
             )
             exit(0)
         opts["logger"].debug("oid: %s", oid)
-        _, context = generation(oname, _type=0, opts=opts)
+        _, context = generation(oname, product_id=pid, _type=0, opts=opts)
+        if context is None:
+            context = "商品质量很好，使用效果不错，满意的一次购物体验！"
         opts["logger"].info(f"\t\t追评内容：{context}")
         context = urllib.parse.quote(context, safe="/", encoding=None, errors=None)
         data1 = {
