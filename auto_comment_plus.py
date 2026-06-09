@@ -54,6 +54,18 @@ IMAGE_CONFIG = {
 # 已使用的图片指纹集合，用于去重
 _used_fingerprints = set()
 
+DEFAULT_COMMENTS = [
+    "商品包装得很好，没有破损，物流速度也很快，第二天就到了。实物质量很好，跟描述一致，用起来很顺手。",
+    "物流特别快，两天就收到货了，包装也很结实。商品本身质量没得说，很有质感。客服态度很友好。",
+    "收货比预期快，物流小哥服务也不错。打开包装后发现产品质量很好，没有任何瑕疵。",
+    "物流送达很及时，收到的时候包装完好无损。商品用起来感觉不错，做工也挺精细的。",
+    "下单后很快就收到货了，物流速度很给力。商品质量不错，和描述基本一致，整体购物体验很好。",
+]
+
+
+def random_default_comment() -> str:
+    return random.choice(DEFAULT_COMMENTS)
+
 # logging with styles
 # Reference: https://stackoverflow.com/a/384125/12002560
 _COLORS = {
@@ -326,10 +338,10 @@ def generation(pname: str, product_id: str = None, _class: int = 0, _type: int =
         opts["logger"].debug("Successfully created a JDSpider instance")
         result = spider.getData(2, 3)  # 这里可以自己改
 
-        # 如果爬取失败，返回 None 让调用方使用默认评价
-        if result is None:
-            opts["logger"].warning("评论爬取失败，将使用默认评价")
-            return None
+        # 爬取失败或没有评论时直接兜底，避免调用方解包 None 报错
+        if not result:
+            opts["logger"].warning("评论爬取失败或为空，将使用默认评价")
+            return 5, random_default_comment()
 
     opts["logger"].debug("Result: %s", result)
 
@@ -347,8 +359,16 @@ def generation(pname: str, product_id: str = None, _class: int = 0, _type: int =
             name = "宝贝"
         opts["logger"].debug("_class is 1. Directly return name")
         return name
+    if isinstance(result, list):
+        result = random.choice(result) if result else random_default_comment()
     else:
-        return 5, str(result)
+        result = str(result).strip()
+
+    if not result:
+        opts["logger"].warning("评论内容为空，将使用默认评价")
+        result = random_default_comment()
+
+    return 5, result
 
 
 # 查询全部评价
@@ -403,7 +423,6 @@ def ordinary(N, opts=None):
     opts = opts or {}
     Order_data = []
     req_et = []
-    imgCommentCount_bool = True
     loop_times = N["待评价订单"] // 20
     opts["logger"].debug("Fetching website data")
     opts["logger"].debug("Total loop times: %d", loop_times)
@@ -490,15 +509,13 @@ def ordinary(N, opts=None):
             # 处理获取失败的情况
             if xing is None or Str is None:
                 opts["logger"].warning("评论生成失败，使用默认评价")
-                Str = random.choice([
-                    "商品包装得很好，没有破损，物流速度也很快，第二天就到了。实物质量很好，跟描述一致，用起来很顺手。",
-                    "物流特别快，两天就收到货了，包装也很结实。商品本身质量没得说，很有质感。客服态度很友好。",
-                    "收货比预期快，物流小哥服务也不错。打开包装后发现产品质量很好，没有任何瑕疵。",
-                ])
+                Str = random_default_comment()
                 xing = 5
 
             opts["logger"].info(f"\t\t评价内容,星级{xing}：" + Str)
             # 获取图片
+            imgurl = ""
+            imgCommentCount_bool = False
             if opts.get("comment_with_image", True):
                 opts["logger"].info(f"\t\t开始获取图片")
                 img_url = (
@@ -532,19 +549,20 @@ def ordinary(N, opts=None):
                                         e, img_resp.status_code, img_resp.text[:200] if img_resp.text else "empty")
                     # 没有图片就跳过晒图
                     opts["logger"].warning("获取图片失败，跳过晒图环节")
-                    imgCommentCount_bool = False
-                    continue
+                    imgdata = {}
                 opts["logger"].debug("Image data: %s", imgdata)
-                if imgdata["imgComments"]["imgCommentCount"] == 0:
+                img_comments = imgdata.get("imgComments", {})
+                img_list = img_comments.get("imgList") or []
+                if not img_list:
                     opts["logger"].warning("这单没有图片数据，所以直接默认五星好评！！")
-                    imgCommentCount_bool = False
-                elif imgdata["imgComments"]["imgCommentCount"] > 0:
-                    img_list = imgdata["imgComments"]["imgList"]
-                    selected_imgs = random.sample(img_list, 2)
+                else:
+                    selected_imgs = random.sample(img_list, min(2, len(img_list)))
+                    opts["logger"].info("本次可用晒图数量: %d，选取数量: %d", len(img_list), len(selected_imgs))
                     imgurl1 = selected_imgs[0]["imageUrl"]
                     opts["logger"].info("imgurl1 url: %s", imgurl1)
-                    imgurl2 = selected_imgs[1]["imageUrl"]
-                    opts["logger"].info("imgurl2 url: %s", imgurl2)
+                    imgurl2 = selected_imgs[1]["imageUrl"] if len(selected_imgs) > 1 else None
+                    if imgurl2:
+                        opts["logger"].info("imgurl2 url: %s", imgurl2)
                     session = requests.Session()
                     imgBasic = "//img20.360buyimg.com/shaidan/s645x515_"
                     imgName1 = generate_unique_filename()
@@ -565,21 +583,24 @@ def ordinary(N, opts=None):
                     else:
                         opts["logger"].warning("图片1下载失败，将跳过该图片")
 
-                    imgName2 = generate_unique_filename()
-                    opts["logger"].debug(f"Image :{imgName2}")
                     imgurl2t = ""
-                    downloaded_file2 = download_image(imgurl2, imgName2, opts.get("logger"))
-                    # 上传图片（带重试机制）
-                    if downloaded_file2:
-                        imgPart2 = upload_image(
-                            imgName2, downloaded_file2, session, headers, opts.get("logger")
-                        )
-                        if imgPart2 and imgPart2.status_code == 200 and ".jpg" in imgPart2.text:
-                            imgurl2t = f"{imgBasic}{imgPart2.text}"
+                    if imgurl2:
+                        imgName2 = generate_unique_filename()
+                        opts["logger"].debug(f"Image :{imgName2}")
+                        downloaded_file2 = download_image(imgurl2, imgName2, opts.get("logger"))
+                        # 上传图片（带重试机制）
+                        if downloaded_file2:
+                            imgPart2 = upload_image(
+                                imgName2, downloaded_file2, session, headers, opts.get("logger")
+                            )
+                            if imgPart2 and imgPart2.status_code == 200 and ".jpg" in imgPart2.text:
+                                imgurl2t = f"{imgBasic}{imgPart2.text}"
+                            else:
+                                opts["logger"].warning("图片2上传失败，将跳过该图片")
                         else:
-                            opts["logger"].warning("图片2上传失败，将跳过该图片")
+                            opts["logger"].warning("图片2下载失败，将跳过该图片")
                     else:
-                        opts["logger"].warning("图片2下载失败，将跳过该图片")
+                        opts["logger"].warning("可用图片不足 2 张，将只上传 1 张")
 
                     # 组合图片URL（如果任一图片上传失败则只用成功的那个）
                     imgurl_parts = []
@@ -595,6 +616,8 @@ def ordinary(N, opts=None):
                     if not imgurl:
                         opts["logger"].warning("图片全部上传失败，跳过晒图环节")
                         imgCommentCount_bool = False
+                    else:
+                        imgCommentCount_bool = True
             Str: str = urllib.parse.quote(Str, safe="/", encoding=None, errors=None)
             Comment_data = {
                 "orderId": oid,
@@ -802,7 +825,7 @@ def review(N, opts=None):
         opts["logger"].debug("oid: %s", oid)
         _, context = generation(oname, product_id=pid, _type=0, opts=opts)
         if context is None:
-            context = "商品质量很好，使用效果不错，满意的一次购物体验！"
+            context = random_default_comment()
         opts["logger"].info(f"\t\t追评内容：{context}")
         context = urllib.parse.quote(context, safe="/", encoding=None, errors=None)
         data1 = {
