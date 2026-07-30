@@ -267,7 +267,7 @@ class JDSpider:
 
     def generate_single_review(self, sentences: list[str], product_name: str = None) -> str:
         """
-        使用 DeepSeek 模型生成一条自然、有真实感、口语化的总结评论，控制在 80 字以内
+        使用 DeepSeek 模型生成一条自然、有真实感、口语化的总结评论，控制在 80 字以上
         :param sentences: 从评论中提取的句子列表
         :param product_name: 商品名称（必须明确指定，避免评论主体错误）
         """
@@ -287,7 +287,7 @@ class JDSpider:
 【重要】请特别注意：
 1. 评价必须是关于 "{product_name}" 这个商品的真实感受
 2. 不要提及其他无关商品或品牌
-3. 评价长度控制在 80-100 字之间
+3. 评价长度控制在 80-100 字之间，不少于80字
 
 以下是一些用户关于该商品的评价句子：
 {prompt_text}
