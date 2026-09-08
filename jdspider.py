@@ -2,7 +2,6 @@
 # @Author :@Zhang Jiale and @Dimlitter
 # @File : jdspider.py
 
-import json
 import logging
 import random
 import re
@@ -18,6 +17,7 @@ from curl_cffi import requests
 import yaml
 import zhon.hanzi
 from lxml import etree
+from jd_response import parse_image_comments
 
 # 加载配置文件
 with open("./config.user.yml", "r", encoding="utf-8") as f:
@@ -143,7 +143,8 @@ class JDSpider:
             "Referer": f"https://item.jd.com/{productid}.html",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/75.0.3770.142 Safari/537.36",
-            # "cookie": cookie,
+            "Cookie": cookie,
+            "Accept": "application/json, text/plain, */*",
         }
 
     def getId(self) -> list:
@@ -189,7 +190,9 @@ class JDSpider:
                     default_logger.info(
                         f"爬取商品评价的 URL 链接是 {url}"
                     )
-                    response = requests.get(url, headers=self.getHeaders(product_id))
+                    response = requests.get(
+                        url, headers=self.getHeaders(product_id), timeout=30
+                    )
                     response.raise_for_status()  # 检查响应状态码
                 except requests.RequestsError as e:
                     default_logger.warning(f"请求异常: {e}")
@@ -198,30 +201,30 @@ class JDSpider:
                 # 减少请求间隔，降低被封风险
                 time.sleep(random.randint(2, 4))
 
-                if not response.text:
-                    default_logger.warning("未爬取到信息")
-                    continue
-
                 try:
-                    res_json = json.loads(response.text)
-                except json.JSONDecodeError as e:
-                    default_logger.warning(f"JSON 解析异常: {e}")
+                    res_json = parse_image_comments(response)
+                except ValueError as e:
+                    default_logger.warning("获取商品 %s 评论失败: %s", product_id, e)
                     continue
 
-                if res_json["imgComments"]["imgCommentCount"] == 0:
+                if not res_json["imgComments"]["imgList"]:
                     default_logger.warning(
                         f"爬取到的商品评价数量为 0，可能是最后一页或请求失败"
                     )
                     break
 
                 for comment_data in res_json["imgComments"]["imgList"]:
+                    comment_vo = comment_data.get("commentVo") if isinstance(comment_data, dict) else None
+                    if not isinstance(comment_vo, dict) or not isinstance(comment_vo.get("content"), str):
+                        default_logger.warning("跳过缺少 commentVo.content 的评论记录")
+                        continue
                     comment = (
-                        comment_data["commentVo"]["content"]
+                        comment_vo["content"]
                         .replace("\n", " ")
                         .replace("\r", " ")
                     )
                     comments.append(comment)
-                    scores.append(comment_data["commentVo"]["score"])
+                    scores.append(comment_vo.get("score"))
 
         default_logger.info(f"已爬取 {len(comments)} 条 {self.comtype[score]} 评价信息")
 

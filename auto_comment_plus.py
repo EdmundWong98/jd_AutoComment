@@ -7,7 +7,6 @@ import argparse
 import copy
 import hashlib
 import io
-import json
 import logging
 import os
 import random
@@ -29,6 +28,8 @@ except ImportError:
     PIL_AVAILABLE = False
 
 import jdspider
+from jd_response import parse_image_comments
+from jd_submission import submit_product_comment
 
 # from http2_adapter import Http2Adapter
 
@@ -526,27 +527,12 @@ def ordinary(N, opts=None):
                 opts["logger"].debug("URL: %s", img_url)
                 img_headers = headers.copy()
                 img_headers["Referer"] = f"https://item.jd.com/{pid}.html"
-                img_resp = requests.get(img_url, headers=img_headers)
-                opts["logger"].debug(
-                    "Successfully accepted the response with status code %d",
-                    img_resp.status_code,
-                )
-                if not img_resp.ok:
-                    opts["logger"].warning(
-                        "Status code of the response is %d, not 200", img_resp.status_code
-                    )
                 opts["logger"].info("imgdata_url:" + img_url)
-                opts["logger"].debug("img_resp text: %s", img_resp.text[:500] if img_resp.text else "empty")
                 try:
-                    if img_resp.text.strip().startswith('('):
-                        #京东接口返回的是JSONP格式，外层有括号
-                        json_text = img_resp.text.strip()[1:-1]
-                        imgdata = json.loads(json_text)
-                    else:
-                        imgdata = img_resp.json()
-                except Exception as e:
-                    opts["logger"].error("解析图片数据失败: %s, 响应状态码: %d, 响应内容: %s",
-                                        e, img_resp.status_code, img_resp.text[:200] if img_resp.text else "empty")
+                    img_resp = requests.get(img_url, headers=img_headers, timeout=30)
+                    imgdata = parse_image_comments(img_resp)
+                except (requests.RequestException, ValueError) as e:
+                    opts["logger"].error("获取商品 %s 图片数据失败: %s", pid, e)
                     # 没有图片就跳过晒图
                     opts["logger"].warning("获取图片失败，跳过晒图环节")
                     imgdata = {}
@@ -632,23 +618,22 @@ def ordinary(N, opts=None):
             opts["logger"].debug("Data: %s", Comment_data)
             if not opts.get("dry_run"):
                 opts["logger"].debug("Sending comment request")
-                Comment_resp = requests.post(url2, headers=headers2, data=Comment_data)
-                opts["logger"].info(
-                    "发送请求后的状态码:{},text:{}".format(
-                        Comment_resp.status_code, Comment_resp.text
-                    )
+                submitted = submit_product_comment(
+                    url2, headers2, Comment_data, opts["logger"]
                 )
+                if submitted is None:
+                    opts["submission_uncertain"] = True
+                    return N
+                if submitted:
+                    opts["logger"].info(f"\t{i}.评价订单\t{oname}[{oid}]评论成功")
+                else:
+                    opts["logger"].warning(f"\t{i}.评价订单\t{oname}[{oid}]评论失败")
             else:
                 opts["logger"].debug("Skipped sending comment request in dry run")
-            if Comment_resp.status_code == 200 and Comment_resp.json()["success"]:
-                # 当发送后的状态码 200，并且返回值里的 success 是 true 才是晒图成功，此外所有状态均为晒图失败
-                opts["logger"].info(f"\t{i}.评价订单\t{oname}[{oid}]评论成功")
-            else:
-                opts["logger"].warning(f"\t{i}.评价订单\t{oname}[{oid}]评论失败")
             opts["logger"].debug("Sleep time (s): %.1f", ORDINARY_SLEEP_SEC)
             time.sleep(ORDINARY_SLEEP_SEC)
             idx += 1
-    N["待评价订单"] -= 1
+    # 订单可能包含多个商品，待评价订单数量由 main 中的 No() 重新查询。
     # 删除当前目录下的所有 jpg 图片
     # delete_jpg()
     return N
@@ -960,6 +945,9 @@ def main(opts=None):
         opts["logger"].info("1.开始普通评价")
         N = ordinary(N, opts)
         opts["logger"].debug("N value after executing ordinary(): %s", N)
+        if opts.get("submission_uncertain"):
+            opts["logger"].warning("本轮已停止：存在提交结果未知的评价，请核对后再运行。")
+            return
         N = No(opts)
         opts["logger"].debug("N value after executing No(): %s", N)
     """ "待晒单" is no longer found in N{} instead of "已评价"
@@ -982,11 +970,11 @@ def main(opts=None):
         opts["logger"].debug("N value after executing Service_rating(): %s", N)
         N = No(opts)
         opts["logger"].debug("N value after executing No(): %s", N)
-    opts["logger"].info("全部完成啦！")
-    for i in N:
-        if N[i] != 0:
-            opts["logger"].warning("出现了二次错误，跳过了部分，重新尝试")
-            main(opts)
+    pending = {key: N.get(key, 0) for key in ("待评价订单", "待追评", "服务评价") if N.get(key, 0)}
+    if pending:
+        opts["logger"].warning("本轮结束，仍有待处理项目：%s；请检查日志，不自动重跑。", pending)
+    else:
+        opts["logger"].info("本轮处理完成。")
 
 
 if __name__ == "__main__":
