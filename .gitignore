@@ -140,3 +140,4 @@ config.user.yml
 img/
 *.jpg
 *.txt
+tests/
