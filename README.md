@@ -73,11 +73,12 @@ python3 auto_comment_plus.py
 本程序支持命令行参数：
 
 ```text
-usage: auto_comment_plus.py [-h] [--dry-run] [--log-level LOG_LEVEL] [-o LOG_FILE]
+usage: auto_comment_plus.py [-h] [--dry-run] [--review] [--log-level LOG_LEVEL] [-o LOG_FILE]
 
 optional arguments:
   -h, --help            show this help message and exit
   --dry-run             have a full run without comment submission
+  --review              also submit follow-up reviews (追评), disabled by default
   --log-level LOG_LEVEL
                         specify logging level (default: info)
   -o LOG_FILE, --log-file LOG_FILE
@@ -91,6 +92,10 @@ optional arguments:
 **`--dry-run`:**
 
 完整地运行程序，但不实际提交评论。
+
+**`--review`:**
+
+同时执行批量追评。默认不追评，只做普通评价和服务评价；需要追评时手动加上此参数，例如 `python3 auto_comment_plus.py --review`。
 
 **`--log-level LOG_LEVEL`:**
 

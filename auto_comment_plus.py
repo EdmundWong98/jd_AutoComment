@@ -958,7 +958,11 @@ def main(opts=None):
         N = No(opts)
         opts['logger'].debug('N value after executing No(): %s', N)
     """
-    if N["待追评"] != 0:
+    if N["待追评"] != 0 and not opts.get("review"):
+        opts["logger"].info(
+            "3.跳过追评：当前有 %s 个待追评，如需追评请使用 --review 参数运行", N["待追评"]
+        )
+    elif N["待追评"] != 0:
         opts["logger"].info("3.开始批量追评,注意：追评不会自动上传图片")
         N = review(N, opts)
         opts["logger"].debug("N value after executing review(): %s", N)
@@ -970,7 +974,10 @@ def main(opts=None):
         opts["logger"].debug("N value after executing Service_rating(): %s", N)
         N = No(opts)
         opts["logger"].debug("N value after executing No(): %s", N)
-    pending = {key: N.get(key, 0) for key in ("待评价订单", "待追评", "服务评价") if N.get(key, 0)}
+    pending_keys = ["待评价订单", "服务评价"]
+    if opts.get("review"):
+        pending_keys.insert(1, "待追评")
+    pending = {key: N.get(key, 0) for key in pending_keys if N.get(key, 0)}
     if pending:
         opts["logger"].warning("本轮结束，仍有待处理项目：%s；请检查日志，不自动重跑。", pending)
     else:
@@ -983,6 +990,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run",
         help="have a full run without comment submission",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--review",
+        help="also submit follow-up reviews (追评), disabled by default",
         action="store_true",
     )
     parser.add_argument(
@@ -1009,7 +1021,11 @@ if __name__ == "__main__":
         args.log_level = "INFO"
     else:
         args.log_level = args.log_level.upper()
-    opts = {"dry_run": args.dry_run, "log_level": args.log_level}
+    opts = {
+        "dry_run": args.dry_run,
+        "review": args.review,
+        "log_level": args.log_level,
+    }
     if hasattr(args, "log_file"):
         opts["log_file"] = args.log_file
     else:
